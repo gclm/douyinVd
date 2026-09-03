@@ -175,10 +175,11 @@
             `<img src="${escapeHtml(src)}" alt="图文" referrerpolicy="no-referrer" />`
           ).join("")}</div>`;
         }
+        const shareUrl = encodeURIComponent(url);
         const downloadBtns = isVideo
-          ? `<a class="btn" href="${escapeHtml(data.video_url)}" target="_blank" rel="noopener">下载视频</a>`
-          : images.map((src, i) =>
-              `<a class="btn" href="${escapeHtml(src)}" target="_blank" rel="noopener">下载图片 ${i + 1}</a>`
+          ? `<a class="btn" href="/download?url=${shareUrl}" download>下载视频</a>`
+          : images.map((_src, i) =>
+              `<a class="btn" href="/download?url=${shareUrl}&type=image&i=${i}" download>下载图片 ${i + 1}</a>`
             ).join("");
         result.innerHTML = `
           ${media}

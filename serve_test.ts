@@ -106,6 +106,55 @@ Deno.test("GET /?data&url= still returns JSON", async () => {
   }
 });
 
+Deno.test("GET /download?url= returns an attachment for the play file", async () => {
+  silenceLogs();
+  const calls: string[] = [];
+  globalThis.fetch = (input: RequestInfo | URL) => {
+    const reqUrl = String(input);
+    calls.push(reqUrl);
+    if (reqUrl.includes("/aweme/v1/web/aweme/detail/")) {
+      return Promise.resolve(
+        new Response(DETAIL_JSON, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }
+    if (reqUrl.includes("/aweme/v1/play/")) {
+      return Promise.resolve(
+        new Response(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), {
+          status: 200,
+          headers: { "content-type": "video/mp4" },
+        }),
+      );
+    }
+    return Promise.reject(new Error("unexpected fetch " + reqUrl));
+  };
+  try {
+    const resp = await handler(
+      new Request(
+        "https://example.com/download?url=" +
+          encodeURIComponent("https://www.douyin.com/video/7675412388233414629"),
+      ),
+    );
+    assertEquals(resp.status, 200);
+    assertStringIncludes(resp.headers.get("content-type") ?? "", "video/mp4");
+    assertStringIncludes(
+      resp.headers.get("content-disposition") ?? "",
+      "attachment",
+    );
+    assertEquals(calls.some((u) => u.includes("/aweme/v1/play/")), true);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("usage page download button uses same-origin /download", async () => {
+  const { pageHtml } = await import("./page.ts");
+  assertStringIncludes(pageHtml, "/download?url=");
+  assertEquals(pageHtml.includes('target="_blank"'), false);
+});
+
 Deno.test("usage page is not served when url param is present", async () => {
   silenceLogs();
   globalThis.fetch = () =>
