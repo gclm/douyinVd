@@ -4,6 +4,8 @@
 
 通过提供的抖音视频或者图文链接，获取对应的无水印视频(图片)链接。
 
+部署后直接打开站点根路径 `/` 即可使用网页：粘贴分享链接，预览视频/图文并下载。
+
 ### 🔧 请求方式
 - **方法**：GET
 - **地址**：`https://yourdomain?url=https://v.douyin.com/xxxx/`
@@ -73,7 +75,8 @@ image_url_list: string[] | null;
 ### 3. vercel 部署
 - fork 本项目后，进入vercel dashboard导入项目
 - 直接点击deploy即可部署
-- 访问链接为 https://yourdomain.vercel.app/api/hello?url=https://v.douyin.com/xxxx/
+- 网页入口为 https://yourdomain.vercel.app/
+- API 访问链接为 https://yourdomain.vercel.app/api/hello?url=https://v.douyin.com/xxxx/
 
 ### 4. docker 部署
 - clone 本项目到服务器

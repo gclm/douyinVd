@@ -1,6 +1,7 @@
-import {getVideoUrl,getVideoInfo} from "./douyin.ts";
+import { getVideoUrl, getVideoInfo } from "./douyin.ts";
+import pageHtml from "./page.html" with { type: "text" };
 
-const handler = async (req:Request) => {
+const handler = async (req: Request) => {
     console.log("Method:", req.method);
 
     const url = new URL(req.url);
@@ -15,7 +16,9 @@ const handler = async (req:Request) => {
         const videoUrl = await getVideoUrl(inputUrl);
         return new Response(videoUrl);
     } else {
-        return new Response("请提供url参数");
+        return new Response(pageHtml, {
+            headers: { "content-type": "text/html; charset=utf-8" },
+        });
     }
 }
 

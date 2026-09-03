@@ -4,6 +4,9 @@
       "runtime": "vercel-deno@3.1.1"
     }
   },
+  "rewrites": [
+    { "source": "/", "destination": "/api/hello" }
+  ],
   "env": {
     "DENO_DIR": "/tmp"
   }

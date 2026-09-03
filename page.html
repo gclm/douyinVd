@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>抖音无水印解析</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f1ea;
+      --fg: #1c1917;
+      --muted: #57534e;
+      --card: #fffdf8;
+      --line: #e7e0d4;
+      --accent: #c2410c;
+      --accent-fg: #fff7ed;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1c1917;
+        --fg: #f5f0e8;
+        --muted: #a8a29e;
+        --card: #292524;
+        --line: #44403c;
+        --accent: #fb923c;
+        --accent-fg: #1c1917;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 16px/1.5 ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    h1 { font-size: 1.6rem; margin: 0 0 8px; }
+    .lead { color: var(--muted); margin: 0 0 24px; }
+    form {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    input[type="url"], input[type="text"] {
+      flex: 1 1 280px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--fg);
+      font: inherit;
+    }
+    button, .btn {
+      appearance: none;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 18px;
+      background: var(--accent);
+      color: var(--accent-fg);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+    }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+    }
+    video, img {
+      width: 100%;
+      max-height: 70vh;
+      border-radius: 12px;
+      background: #000;
+      object-fit: contain;
+    }
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .gallery img { max-height: 240px; }
+    .meta { margin: 16px 0; }
+    .meta h2 { font-size: 1.1rem; margin: 0 0 6px; }
+    .meta p { margin: 0; color: var(--muted); }
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      margin: 12px 0 16px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .error { color: #b91c1c; }
+    @media (prefers-color-scheme: dark) {
+      .error { color: #fca5a5; }
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>抖音无水印解析</h1>
+    <p class="lead">粘贴分享链接，解析视频或图文，并下载无水印内容。</p>
+    <form id="form">
+      <input id="url" type="text" name="url" required placeholder="https://v.douyin.com/xxxx/" autocomplete="off" />
+      <button type="submit" id="submit">解析</button>
+    </form>
+    <p id="status" hidden></p>
+    <section id="result" class="card" hidden></section>
+  </main>
+  <script>
+    const form = document.getElementById("form");
+    const input = document.getElementById("url");
+    const submit = document.getElementById("submit");
+    const statusEl = document.getElementById("status");
+    const result = document.getElementById("result");
+
+    function setStatus(text, isError) {
+      statusEl.hidden = !text;
+      statusEl.textContent = text;
+      statusEl.className = isError ? "error" : "";
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    function formatCount(n) {
+      if (n == null) return "-";
+      if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, "") + "万";
+      return String(n);
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const url = input.value.trim();
+      if (!url) return;
+      submit.disabled = true;
+      result.hidden = true;
+      result.innerHTML = "";
+      setStatus("解析中…");
+      try {
+        const api = "/?data&url=" + encodeURIComponent(url);
+        const resp = await fetch(api);
+        const text = await resp.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch { throw new Error(text || "解析失败"); }
+        if (!data || (!data.video_url && !(data.image_url_list && data.image_url_list.length))) {
+          throw new Error(data && data.message ? data.message : "未找到视频或图片");
+        }
+        setStatus("");
+        const isVideo = data.type !== "img" && data.video_url;
+        const images = data.image_url_list || [];
+        let media = "";
+        if (isVideo) {
+          media = `<video controls playsinline referrerpolicy="no-referrer" src="${escapeHtml(data.video_url)}"></video>`;
+        } else {
+          media = `<div class="gallery">${images.map((src) =>
+            `<img src="${escapeHtml(src)}" alt="图文" referrerpolicy="no-referrer" />`
+          ).join("")}</div>`;
+        }
+        const downloadBtns = isVideo
+          ? `<a class="btn" href="${escapeHtml(data.video_url)}" target="_blank" rel="noopener">下载视频</a>`
+          : images.map((src, i) =>
+              `<a class="btn" href="${escapeHtml(src)}" target="_blank" rel="noopener">下载图片 ${i + 1}</a>`
+            ).join("");
+        result.innerHTML = `
+          ${media}
+          <div class="meta">
+            <h2>${escapeHtml(data.desc || "无标题")}</h2>
+            <p>${escapeHtml(data.nickname || "未知作者")}${data.signature ? " · " + escapeHtml(data.signature) : ""}</p>
+          </div>
+          <div class="stats">
+            <span>点赞 ${formatCount(data.digg_count)}</span>
+            <span>评论 ${formatCount(data.comment_count)}</span>
+            <span>收藏 ${formatCount(data.collect_count)}</span>
+            <span>分享 ${formatCount(data.share_count)}</span>
+            ${data.create_time ? `<span>${escapeHtml(data.create_time)}</span>` : ""}
+          </div>
+          <div class="actions">${downloadBtns}</div>
+        `;
+        result.hidden = false;
+      } catch (err) {
+        setStatus(err && err.message ? err.message : "解析失败", true);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
