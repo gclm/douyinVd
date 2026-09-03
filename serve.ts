@@ -1,5 +1,5 @@
 import { getVideoUrl, getVideoInfo } from "./douyin.ts";
-import pageHtml from "./page.html" with { type: "text" };
+import { pageHtml } from "./page.ts";
 
 const handler = async (req: Request) => {
     console.log("Method:", req.method);

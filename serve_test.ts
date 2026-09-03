@@ -52,6 +52,13 @@ Deno.test("GET / returns the usage page", async () => {
   }
 });
 
+Deno.test("usage page is a plain TypeScript string export", async () => {
+  const { pageHtml } = await import("./page.ts");
+  assertStringIncludes(pageHtml, "<!DOCTYPE html>");
+  assertStringIncludes(pageHtml, 'id="url"');
+  assertStringIncludes(pageHtml, "解析");
+});
+
 Deno.test("GET /?url= still returns the play URL", async () => {
   silenceLogs();
   globalThis.fetch = () =>
