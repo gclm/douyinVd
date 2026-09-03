@@ -1,10 +1,7 @@
-// Users/pwhcoder/WebstormProjects/douyinVd/douyin.ts
-var pattern = /"video":{"play_addr":{"uri":"([a-z0-9]+)"/;
+// douyin.ts
 var cVUrl = "https://www.iesdouyin.com/aweme/v1/play/?video_id=%s&ratio=1080p&line=0";
-var statsRegex = /"statistics"\s*:\s*\{([\s\S]*?)\},/;
-var regex = /"nickname":\s*"([^"]+)",\s*"signature":\s*"([^"]+)"/;
-var ctRegex = /"create_time":\s*(\d+)/;
-var descRegex = /"desc":\s*"([^"]+)"/;
+var DETAIL_UA = "Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)";
+var SHARE_UA = "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile Safari/537.36";
 function formatDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -14,115 +11,107 @@ function formatDate(date) {
   const seconds = String(date.getSeconds()).padStart(2, "0");
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
-async function doGet(url) {
+async function doGet(url, ua = SHARE_UA) {
   const headers = new Headers();
-  headers.set(
-      "User-Agent",
-      "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile Safari/537.36"
-  );
-  const resp = await fetch(url, { method: "GET", headers });
-  return resp;
+  headers.set("User-Agent", ua);
+  if (ua === DETAIL_UA) {
+    headers.set("Referer", "https://www.douyin.com/");
+  }
+  return await fetch(url, {
+    method: "GET",
+    headers
+  });
 }
-async function parseImgList(body) {
-  const content = body.replace(/\\u002F/g, "/").replace(/\//g, "/");
-  const reg = /{"uri":"[^\s"]+","url_list":\["(https:\/\/p\d{1,2}-sign.douyinpic.com\/.*?)"/g;
-  const urlRet = /"uri":"([^\s"]+)","url_list":/g;
-  let imgMatch;
-  const firstUrls = [];
-  while ((imgMatch = reg.exec(content)) !== null) {
-    firstUrls.push(imgMatch[1]);
+function extractAwemeIdFromText(text) {
+  const patterns = [
+    /\/(?:share\/)?(?:video|note)\/(\d{8,})/,
+    /\/modal_id=(\d{8,})/,
+    /"itemId"\s*:\s*"(\d+)"/,
+    /itemId["']?\s*:\s*["']?(\d{8,})/
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
   }
-  let urlMatch;
-  const urlList = [];
-  while ((urlMatch = urlRet.exec(content)) !== null) {
-    urlList.push(urlMatch[1]);
+  return null;
+}
+async function resolveAwemeId(url) {
+  const fromUrl = extractAwemeIdFromText(url);
+  if (fromUrl) return fromUrl;
+  const resp = await doGet(url);
+  const location = resp.url || "";
+  const fromLocation = extractAwemeIdFromText(location);
+  if (fromLocation) return fromLocation;
+  const body = await resp.text();
+  const fromBody = extractAwemeIdFromText(body);
+  if (fromBody) return fromBody;
+  throw new Error("Video ID not found in URL");
+}
+function parseImgListFromDetail(images) {
+  if (!images?.length) return [];
+  const urls = [];
+  for (const image of images) {
+    const list = image.download_url_list?.length ? image.download_url_list : image.url_list || [];
+    const chosen = list.find((u) => !u.includes("/obj/")) ?? list[0];
+    if (chosen) urls.push(chosen);
   }
-  const urlSet = new Set(urlList);
-  const rList = [];
-  for (let urlSetKey of urlSet) {
-    let t = firstUrls.find((item) => {
-      return item.includes(urlSetKey);
-    });
-    if (t) {
-      rList.push(t);
+  return urls.filter((url) => !url.includes("/obj/"));
+}
+async function fetchAwemeDetail(awemeId) {
+  const detailUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${awemeId}&aid=6383&device_platform=webapp`;
+  let lastError = "No video or image content found in the response.";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resp = await doGet(detailUrl, DETAIL_UA);
+    const text = await resp.text();
+    try {
+      const payload = JSON.parse(text);
+      if (payload.aweme_detail) return payload.aweme_detail;
+      lastError = "No video or image content found in the response.";
+    } catch {
+      lastError = "No video or image content found in the response.";
     }
   }
-  const filteredRList = rList.filter((url) => !url.includes("/obj/"));
-  console.log("filteredRList.length:", filteredRList.length);
-  return filteredRList;
+  throw new Error(lastError);
+}
+function toVideoInfo(detail) {
+  const playUri = detail.video?.play_addr?.uri || "";
+  const image_url_list = parseImgListFromDetail(detail.images);
+  const type = playUri ? "video" : "img";
+  const video_url = playUri ? cVUrl.replace("%s", playUri) : "";
+  if (!video_url && image_url_list.length === 0) {
+    throw new Error("No video or image content found in the response.");
+  }
+  const stats = detail.statistics;
+  const createTime = detail.create_time ? formatDate(new Date(detail.create_time * 1e3)) : null;
+  const douyinVideoInfo = {
+    aweme_id: detail.aweme_id || stats?.aweme_id || null,
+    comment_count: stats?.comment_count ?? null,
+    digg_count: stats?.digg_count ?? null,
+    share_count: stats?.share_count ?? null,
+    collect_count: stats?.collect_count ?? null,
+    nickname: detail.author?.nickname ?? null,
+    signature: detail.author?.signature ?? null,
+    desc: detail.desc ?? null,
+    create_time: createTime,
+    video_url,
+    type,
+    image_url_list
+  };
+  console.log(douyinVideoInfo);
+  return douyinVideoInfo;
 }
 async function getVideoInfo(url) {
-  let type = "video";
-  let img_list = [];
-  let video_url = "";
-  const resp = await doGet(url);
-  const body = await resp.text();
-  const match = pattern.exec(body);
-  if (!match || !match[1]) {
-    type = "img";
-  }
-  if (type == "video") {
-    video_url = cVUrl.replace("%s", match[1]);
-  } else {
-    img_list = await parseImgList(body);
-  }
-  const auMatch = body.match(regex);
-  const ctMatch = body.match(ctRegex);
-  const descMatch = body.match(descRegex);
-  const statsMatch = body.match(statsRegex);
-  if (statsMatch) {
-    const innerContent = statsMatch[0];
-    const awemeIdMatch = innerContent.match(/"aweme_id"\s*:\s*"([^"]+)"/);
-    const commentCountMatch = innerContent.match(/"comment_count"\s*:\s*(\d+)/);
-    const diggCountMatch = innerContent.match(/"digg_count"\s*:\s*(\d+)/);
-    const playCountMatch = innerContent.match(/"play_count"\s*:\s*(\d+)/);
-    const shareCountMatch = innerContent.match(/"share_count"\s*:\s*(\d+)/);
-    const collectCountMatch = innerContent.match(/"collect_count"\s*:\s*(\d+)/);
-    const douyinVideoInfo = {
-      aweme_id: awemeIdMatch ? awemeIdMatch[1] : null,
-      comment_count: commentCountMatch ? parseInt(commentCountMatch[1]) : null,
-      digg_count: diggCountMatch ? parseInt(diggCountMatch[1]) : null,
-      share_count: shareCountMatch ? parseInt(shareCountMatch[1]) : null,
-      collect_count: collectCountMatch ? parseInt(collectCountMatch[1]) : null,
-      nickname: null,
-      signature: null,
-      desc: null,
-      create_time: null,
-      video_url,
-      type,
-      image_url_list: img_list
-    };
-    if (auMatch) {
-      douyinVideoInfo.nickname = auMatch[1];
-      douyinVideoInfo.signature = auMatch[2];
-    }
-    if (ctMatch) {
-      const date = new Date(parseInt(ctMatch[1]) * 1e3);
-      douyinVideoInfo.create_time = formatDate(date);
-    }
-    if (descMatch) {
-      douyinVideoInfo.desc = descMatch[1];
-    }
-    console.log(douyinVideoInfo);
-    return douyinVideoInfo;
-  } else {
-    throw new Error("No stats found in the response.");
-  }
-}
-async function getVideoId(url) {
-  const resp = await doGet(url);
-  const body = await resp.text();
-  const match = pattern.exec(body);
-  if (!match || !match[1]) throw new Error("Video ID not found in URL");
-  return match[1];
+  const awemeId = await resolveAwemeId(url);
+  const detail = await fetchAwemeDetail(awemeId);
+  return toVideoInfo(detail);
 }
 async function getVideoUrl(url) {
-  const id = await getVideoId(url);
-  const downloadUrl = cVUrl.replace("%s", id);
-  return downloadUrl;
+  const info = await getVideoInfo(url);
+  if (!info.video_url) throw new Error("Video ID not found in URL");
+  return info.video_url;
 }
 
-// Users/pwhcoder/WebstormProjects/douyinVd/serve.ts
+// serve.ts
 var handler = async (req) => {
   console.log("Method:", req.method);
   const url = new URL(req.url);
@@ -140,7 +129,7 @@ var handler = async (req) => {
   }
 };
 
-// Users/pwhcoder/WebstormProjects/douyinVd/cfworker.ts
+// cfworker.ts
 var cfworker_default = {
   fetch: handler
 };

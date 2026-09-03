@@ -1,15 +1,10 @@
-import {string} from "npm:zod@3.24.2";
-
-const pattern = /"video":{"play_addr":{"uri":"([a-z0-9]+)"/;
 const cVUrl =
   "https://www.iesdouyin.com/aweme/v1/play/?video_id=%s&ratio=1080p&line=0";
 
-const statsRegex = /"statistics"\s*:\s*\{([\s\S]*?)\},/;
-
-// 使用正则表达式匹配 nickname 和 signature
-const regex = /"nickname":\s*"([^"]+)",\s*"signature":\s*"([^"]+)"/;
-const ctRegex = /"create_time":\s*(\d+)/;
-const descRegex = /"desc":\s*"([^"]+)"/;
+const DETAIL_UA =
+  "Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)";
+const SHARE_UA =
+  "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile Safari/537.36";
 
 interface DouyinVideoInfo {
   // ID
@@ -38,160 +33,156 @@ interface DouyinVideoInfo {
   image_url_list: string[] | null;
 }
 
-// 定义格式化函数
+interface AwemeDetail {
+  aweme_id?: string;
+  desc?: string;
+  create_time?: number;
+  aweme_type?: number;
+  author?: { nickname?: string; signature?: string };
+  statistics?: {
+    aweme_id?: string;
+    comment_count?: number;
+    digg_count?: number;
+    share_count?: number;
+    collect_count?: number;
+  };
+  video?: { play_addr?: { uri?: string; url_list?: string[] } };
+  images?: Array<{ url_list?: string[]; download_url_list?: string[] }>;
+}
+
 function formatDate(date: Date): string {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0'); // 月份从0开始
-  const day = String(date.getDate()).padStart(2, '0');
-
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-async function doGet(url: string): Promise<Response> {
+async function doGet(url: string, ua = SHARE_UA): Promise<Response> {
   const headers = new Headers();
-  headers.set(
-    "User-Agent",
-    "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile Safari/537.36",
-  );
-  const resp = await fetch(url, { method: "GET", headers });
-  return resp;
+  headers.set("User-Agent", ua);
+  if (ua === DETAIL_UA) {
+    headers.set("Referer", "https://www.douyin.com/");
+  }
+  return await fetch(url, { method: "GET", headers });
 }
 
-async function parseImgList(body: string):Promise<string[]> {
-  const content = body.replace(/\\u002F/g, "/").replace(/\//g, '/')
-  // console.log(content)
-  const reg = /{"uri":"[^\s"]+","url_list":\["(https:\/\/p\d{1,2}-sign.douyinpic.com\/.*?)"/g;
-  const urlRet = /"uri":"([^\s"]+)","url_list":/g
-
-  let imgMatch;
-  const firstUrls: string[] = [];
-  while ((imgMatch = reg.exec(content)) !== null) {
-    firstUrls.push(imgMatch[1]);
+function extractAwemeIdFromText(text: string): string | null {
+  const patterns = [
+    /\/(?:share\/)?(?:video|note)\/(\d{8,})/,
+    /\/modal_id=(\d{8,})/,
+    /"itemId"\s*:\s*"(\d+)"/,
+    /itemId["']?\s*:\s*["']?(\d{8,})/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
   }
-  // console.log('firstUrls.length:',firstUrls.length)
-// console.log(firstUrls)
+  return null;
+}
 
-  let urlMatch;
-  const urlList: string[] = [];
-  while ((urlMatch = urlRet.exec(content)) !== null) {
-    urlList.push(urlMatch[1])
+async function resolveAwemeId(url: string): Promise<string> {
+  const fromUrl = extractAwemeIdFromText(url);
+  if (fromUrl) return fromUrl;
+
+  const resp = await doGet(url);
+  const location = resp.url || "";
+  const fromLocation = extractAwemeIdFromText(location);
+  if (fromLocation) return fromLocation;
+
+  const body = await resp.text();
+  const fromBody = extractAwemeIdFromText(body);
+  if (fromBody) return fromBody;
+
+  throw new Error("Video ID not found in URL");
+}
+
+function parseImgListFromDetail(images: AwemeDetail["images"]): string[] {
+  if (!images?.length) return [];
+  const urls: string[] = [];
+  for (const image of images) {
+    const list = image.download_url_list?.length
+      ? image.download_url_list
+      : image.url_list || [];
+    const chosen = list.find((u) => !u.includes("/obj/")) ?? list[0];
+    if (chosen) urls.push(chosen);
   }
-  const urlSet = new Set(urlList)
-  // console.log('urlSet.size:',urlSet.size)
-  const rList = []
+  return urls.filter((url) => !url.includes("/obj/"));
+}
 
-  for (let urlSetKey of urlSet) {
-    // console.log('urlSetKey:',urlSetKey)
-
-    let t = firstUrls.find((item) => {
-      return item.includes(urlSetKey);
-    });
-    if (t) {
-      rList.push(t)
+async function fetchAwemeDetail(awemeId: string): Promise<AwemeDetail> {
+  const detailUrl =
+    `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${awemeId}&aid=6383&device_platform=webapp`;
+  let lastError = "No video or image content found in the response.";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resp = await doGet(detailUrl, DETAIL_UA);
+    const text = await resp.text();
+    try {
+      const payload = JSON.parse(text) as {
+        aweme_detail?: AwemeDetail;
+        status_code?: number;
+      };
+      if (payload.aweme_detail) return payload.aweme_detail;
+      lastError = "No video or image content found in the response.";
+    } catch {
+      lastError = "No video or image content found in the response.";
     }
   }
+  throw new Error(lastError);
+}
 
-//打印rList结果
-// console.log(rList)
-// console.log(rList.length);
+function toVideoInfo(detail: AwemeDetail): DouyinVideoInfo {
+  const playUri = detail.video?.play_addr?.uri || "";
+  const image_url_list = parseImgListFromDetail(detail.images);
+  const type = playUri ? "video" : "img";
+  const video_url = playUri ? cVUrl.replace("%s", playUri) : "";
 
-// 过滤掉包含 /obj/ 的链接
-  const filteredRList = rList.filter(url => !url.includes("/obj/"));
+  if (!video_url && image_url_list.length === 0) {
+    throw new Error("No video or image content found in the response.");
+  }
 
-// 输出过滤后的结果
-//   console.log(filteredRList);
-  console.log('filteredRList.length:',filteredRList.length)
-  return filteredRList;
+  const stats = detail.statistics;
+  const createTime = detail.create_time
+    ? formatDate(new Date(detail.create_time * 1000))
+    : null;
+
+  const douyinVideoInfo: DouyinVideoInfo = {
+    aweme_id: detail.aweme_id || stats?.aweme_id || null,
+    comment_count: stats?.comment_count ?? null,
+    digg_count: stats?.digg_count ?? null,
+    share_count: stats?.share_count ?? null,
+    collect_count: stats?.collect_count ?? null,
+    nickname: detail.author?.nickname ?? null,
+    signature: detail.author?.signature ?? null,
+    desc: detail.desc ?? null,
+    create_time: createTime,
+    video_url,
+    type,
+    image_url_list,
+  };
+  console.log(douyinVideoInfo);
+  return douyinVideoInfo;
 }
 
 async function getVideoInfo(url: string): Promise<DouyinVideoInfo> {
-  let type = "video";
-  let img_list: string[] = [];
-  let video_url = "";
-  const resp = await doGet(url);
-  const body = await resp.text();
-  const match = pattern.exec(body);
-  if (!match || !match[1]) {
-    type = "img";
-  }
-  if (type == "video") {
-    video_url = cVUrl.replace("%s", match![1]);
-  } else {
-    img_list = await parseImgList(body)
-  }
-  const auMatch = body.match(regex);
-  const ctMatch = body.match(ctRegex);
-  const descMatch = body.match(descRegex);
-  const statsMatch = body.match(statsRegex);
-  if (statsMatch) {
-    const innerContent = statsMatch[0]; // 整个匹配结果
-
-    // 提取具体字段值
-    const awemeIdMatch = innerContent.match(/"aweme_id"\s*:\s*"([^"]+)"/);
-    const commentCountMatch = innerContent.match(/"comment_count"\s*:\s*(\d+)/);
-    const diggCountMatch = innerContent.match(/"digg_count"\s*:\s*(\d+)/);
-    const playCountMatch = innerContent.match(/"play_count"\s*:\s*(\d+)/);
-    const shareCountMatch = innerContent.match(/"share_count"\s*:\s*(\d+)/);
-    const collectCountMatch = innerContent.match(/"collect_count"\s*:\s*(\d+)/);
-    const douyinVideoInfo: DouyinVideoInfo = {
-      aweme_id: awemeIdMatch ? awemeIdMatch[1] : null,
-      comment_count: commentCountMatch ? parseInt(commentCountMatch[1]) : null,
-      digg_count: diggCountMatch ? parseInt(diggCountMatch[1]) : null,
-      share_count: shareCountMatch ? parseInt(shareCountMatch[1]) : null,
-      collect_count: collectCountMatch ? parseInt(collectCountMatch[1]) : null,
-      nickname: null,
-      signature: null,
-      desc: null,
-      create_time: null,
-      video_url: video_url,
-      type: type,
-      image_url_list: img_list,
-    };
-
-    if (auMatch) {
-      douyinVideoInfo.nickname = auMatch[1];
-      douyinVideoInfo.signature = auMatch[2];
-    }
-
-    if (ctMatch) {
-      const date = new Date(parseInt(ctMatch[1]) * 1000);
-      douyinVideoInfo.create_time = formatDate(date);
-
-    }
-    if (descMatch) {
-      douyinVideoInfo.desc = descMatch[1];
-    }
-    console.log(douyinVideoInfo);
-    return douyinVideoInfo;
-  } else {
-    throw new Error("No stats found in the response.");
-  }
+  const awemeId = await resolveAwemeId(url);
+  const detail = await fetchAwemeDetail(awemeId);
+  return toVideoInfo(detail);
 }
 
 async function getVideoId(url: string): Promise<string> {
-  const resp = await doGet(url);
-  const body = await resp.text();
-  const match = pattern.exec(body);
-  if (!match || !match[1]) throw new Error("Video ID not found in URL");
-  return match[1];
+  const info = await getVideoInfo(url);
+  const id = info.video_url?.match(/video_id=([^&]+)/)?.[1];
+  if (!id) throw new Error("Video ID not found in URL");
+  return id;
 }
 
 async function getVideoUrl(url: string): Promise<string> {
-  const id = await getVideoId(url);
-  const downloadUrl = cVUrl.replace("%s", id);
-  return downloadUrl;
+  const info = await getVideoInfo(url);
+  if (!info.video_url) throw new Error("Video ID not found in URL");
+  return info.video_url;
 }
 
-// const url = "https://v.douyin.com/JyCk5gy";
-// const downloadUrl = await getVideoInfo(url);
-// console.log(downloadUrl);
-// https://v.douyin.com/nA55ZPqlGOc/
-// https://v.douyin.com/S1Z20qK0spM/
-
-
-
-export { getVideoUrl,getVideoInfo };
+export { getVideoUrl, getVideoInfo };
